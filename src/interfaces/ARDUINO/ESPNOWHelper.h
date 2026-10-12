@@ -14,7 +14,11 @@
 #include "freertos/timers.h"
 #include "nvs_flash.h"
 #include "esp_event_loop.h"
+#if __has_include("esp_netif.h")
+#include "esp_netif.h"
+#else
 #include "tcpip_adapter.h"
+#endif
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -29,10 +33,10 @@ static const char *TAG = "espnow";
    It is configured in menuconfig. */
 #if CONFIG_STATION_MODE
   #define ESPNOW_WIFI_MODE WIFI_MODE_STA
-  #define ESPNOW_WIFI_IF WIFI_IF_STA
+  #define ESPNOW_WIFI_IF ESP_IF_WIFI_STA
 #else
   #define ESPNOW_WIFI_MODE WIFI_MODE_AP
-  #define ESPNOW_WIFI_IF WIFI_IF_AP
+  #define ESPNOW_WIFI_IF ESP_IF_WIFI_AP
 #endif
 
 #define ESPNOW_MAX_PACKET 250
@@ -62,15 +66,28 @@ static uint8_t last_mac[ESP_NOW_ETH_ALEN];
 static TaskHandle_t pjon_task_h = NULL;
 static xQueueHandle espnow_recv_queue = NULL;
 
+#if __has_include("esp_netif.h")
+static void espnow_send_cb(const esp_now_send_info_t *esp_now_info, esp_now_send_status_t status) {
+#else
 static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) {
+#endif
   // The only thing we do in the send callback is unblock the
   // other thread which blocks after posting data to the MAC
   xTaskNotifyGive(pjon_task_h);
+  #if __has_include("esp_netif.h")
+  if(esp_now_info == NULL || esp_now_info->src_addr == NULL) ESP_LOGE(TAG, "Send cb arg error");
+  #else
   if(mac_addr == NULL) ESP_LOGE(TAG, "Send cb arg error");
+  #endif
   return;
 };
 
+#if __has_include("esp_netif.h")
+static void espnow_recv_cb(const esp_now_recv_info *esp_now_info, const uint8_t *data, int len) {
+  const uint8_t *mac_addr = esp_now_info->src_addr;
+#else
 static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len) {
+#endif
   espnow_packet_t packet;
   if(mac_addr == NULL || data == NULL || len <= 0) {
     ESP_LOGE(TAG, "Receive cb arg error");
@@ -116,11 +133,12 @@ public:
     memset(peer, 0, sizeof(esp_now_peer_info_t));
     peer->channel = _channel;
     peer->ifidx = ESPNOW_WIFI_IF;
-    if(IS_BROADCAST_ADDR(mac_addr)) peer->encrypt = false;
-    else {
-      peer->encrypt = true;
-      memcpy(peer->lmk, _esp_pmk, 16);
-    }
+    if(IS_BROADCAST_ADDR(mac_addr))
+      peer->encrypt = false;
+    // else {
+    //   peer->encrypt = true;
+    //   memcpy(peer->lmk, _esp_pmk, 16);
+    // }
     memcpy(peer->peer_addr, mac_addr, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK(esp_now_add_peer(peer));
     free(peer);
@@ -149,7 +167,13 @@ public:
       ESP_LOGE(TAG, "Create mutex fail");
       return ESP_FAIL;
     }
+
+    #if __has_include("esp_netif.h")
+    esp_netif_init();
+    #else
     tcpip_adapter_init();
+    #endif
+    
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_country(&wifi_country));
